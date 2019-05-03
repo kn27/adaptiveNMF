@@ -1,5 +1,5 @@
 import numpy as np
-from sklearn.decomposition import nmf, nmf_new
+from sklearn.decomposition import nmf
 from sklearn.preprocessing import normalize
 from numpy import linalg
 from util import *
@@ -18,26 +18,45 @@ def non_negative_factorization(X, s0, tol=1e-4, max_iter=200):
 def subroutine(X,U,V,max_iter = 200, tol = 0.001):
     iter_ = 0
     F =np.zeros(max_iter)
-    while (iter_<30 or (F[iter_-30:iter_-1].mean()-F[iter_])/F[iter_]> tol) and iter_<max_iter:
-        iter_ += 1
+    print(f'Starting error {linalg.norm(X - U@V.T)}')
+    while iter_<max_iter and (iter_<30 or (F[iter_-3:iter_-1].mean()-F[iter_])/F[iter_]> tol) :
         U,V,s = reduce(U,V)
         U,V = palm(X,U,V)
         F[iter_] = linalg.norm(X - U@V.T)
         print(f'Complete iter {iter_}: {F[iter_]}')
-    return U,V
+        iter_ += 1
+    return U,V,F
 
-def palm(X, U, V, lambda_ = 1e-06, eps = 1e-14, gamma1 = 1.1, gamma2 = 1.2 ):
-    c = 1/(gamma1 * (linalg.norm(V.T@V)+ lambda_/eps))
-    d = 1/(gamma2 * (linalg.norm(U.T@U) + lambda_ * np.sqrt(U.shape[0]) * linalg.norm(U)))
-    F_U = -(X - U@V.T)@V + lambda_ * U @ np.diag([linalg.norm(V[:,j])/linalg.norm(U[:,j]) for j in range(U.shape[1])])
-    U = projection(U - c * F_U)
-    F_V = -(X - U@V.T).T@U + lambda_ * V @ np.diag([linalg.norm(U[:,j])/linalg.norm(V[:,j]) for j in range(U.shape[1])])
-    V = projection(V - d * F_V)
+def palm(P, U, V, lambda_ = 1e-06, eps = 1e-14, gamma1 = 1.1, gamma2 = 1.2 ):
+    m,n = U.shape
+    c = 1/(gamma1 * (linalg.norm(V.T@V) + lambda_/eps))
+    #print(f'c: {c}')
+    d = 1/(gamma2 * (linalg.norm(U.T@U) + lambda_*np.sqrt(m)*linalg.norm(U)))
+    #print(f'd:{d}')
+    #print(norm_by_axis(U))
+    #print(norm_by_axis(V))
+    time0 = time.time()
+    F_U = -(P - U@V.T)@V + lambda_ * U @ np.diag([linalg.norm(V[:,j])/linalg.norm(U[:,j]) for j in range(n)])
+    time1 = time.time()
+    #pdb.set_trace()
+    U = projection(U - c * F_U, axis = 0)
+    time2 = time.time()
+    F_V = -(P - U@V.T).T@U + lambda_ * V @ np.diag([linalg.norm(U[:,j])/linalg.norm(V[:,j]) for j in range(n)])
+    time3 = time.time()
+    V = projection(V - d * F_V, axis = 1)
+    time4 = time.time()
+    #print(time1 - time0, time2-time1, time3-time2, time4-time3)
     return U,V
 
 def reduce(U,V, drop_threshold = 0.001):
+    #pdb.set_trace()
     norm = linalg.norm(U, ord = 2, axis = 0)
-    drop = np.where(norm<drop_threshold)
+    print(f'Min norm of U: {min(norm)}')
+    drop = np.where(norm<drop_threshold)[0]
+    if len(drop) > 0 :
+        print(f'Drop columns {drop}')
+    #else:
+    #    print(f'No reduction. Rank is {U.shape[1]}')
     U = np.delete(U, drop, axis = 1)
     V = np.delete(V, drop, axis = 1)
     return U,V,U.shape[1] - len(drop)
@@ -78,18 +97,29 @@ def check_global_optimality(P,X,mu, threshold, iter_, lr,extra_eps, lambda_):
         change = new_sigma / old_sigma - 1
     return new_sigma < (1+extra_eps) * lambda_, u, v
 
-def norm(X):
+def norm_by_axis(X):
     return linalg.norm(X, ord = 2, axis = 0)
 
-def projection(X):
+def projection(X, axis = 0):
     d,s = X.shape
     proj = np.zeros([d,s])
-    for i in range(d):
-        l = np.argmax([sum([X[i,k] - X[i,j] for k in range(j)]) for j in range(s)])
-        eta = 1/l * (1 - sum(X[i,:l]))
-        proj[i,:] = X[i,:] + eta * np.ones(s)
-        proj[i,:] = proj[i,:] * (proj[i,:]>0)
-    return proj
+    if axis == 0:
+        for i in range(d):
+            temp = sorted(X[i,:], reverse = True)
+            l = np.argmax([sum([temp[k] - temp[j] for k in range(j)]) for j in range(s)])
+            eta = 1/l * (1 - sum(temp[:l+1]))
+            proj[i,:] = X[i,:] + eta * np.ones(s)
+            proj[i,:] = proj[i,:] * (proj[i,:]>0)
+        return proj
+    elif axis == 1:
+        for i in range(s):
+            temp = sorted(X[:,i], reverse = True)
+            l = np.argmax([sum([temp[k] - temp[j] for k in range(j)]) for j in range(d)])
+            eta = 1/l * (1 - sum(temp[:l+1]))
+            proj[:,i] = X[:,i] + eta * np.ones(d)
+            proj[:,i] = proj[:,i] * (proj[:,i]>0)
+        return proj
+        
 
 def init(d, s0):
     U = normalize(np.random.rand(d,s0), axis = 1, norm = 'l1')
