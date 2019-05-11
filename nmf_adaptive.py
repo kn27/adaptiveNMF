@@ -14,67 +14,89 @@ formatter = logging.Formatter('[%(levelname)7s] - %(message)s')
 handler.setFormatter(formatter)
 log.addHandler(handler)
 
-def non_negative_factorization(P, s0, drop_threshold = 0.01, max_iter = 10, inner_max_iter = 200,  tol = 0.001, lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2):
+def non_negative_factorization(P, s0, lr = 0.1, drop_threshold = 1e-8, max_iter = 10, inner_max_iter = 200,  lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2):
     d = P.shape[0]
+    E = np.diag(np.sum(P, axis = 0))/d
     U,V = init(d,s0)
     iter_ = 0
     while True:
-        U,V = compress(U,V)
-        U,V,mu, F = subroutine(P,U,V, eps = eps, drop_threshold = drop_threshold, max_iter = inner_max_iter, lambda_ = lambda_, tol = tol, gamma1 = gamma1, gamma2 = gamma2)
-        global_check, u,v = check_global_optimality(P, U@V.T, mu,lambda_ = lambda_, max_iter= 200)
+        #U,V = compress(U,V)
+        U,V,mu,F = subroutine(E,P,U,V, eps = eps, drop_threshold = drop_threshold, max_iter = inner_max_iter, lambda_ = lambda_,  gamma1 = gamma1, gamma2 = gamma2)
+        global_check, u, v = check_global_optimality(E, P, U@V.T, mu,lambda_ = lambda_, max_iter= 200, lr = lr)
         if global_check:
-            log.info(f'Achieve global optimum!')
+            log.info(f'MAIN - Achieve global optimum!')
             break
         elif iter_ == max_iter:
-            log.info(f'Exit at iter = {iter_}')
+            log.info(f'MAIN - Exit at iter = {iter_}')
             break
         else:
-            U,V = expand(U,V,u,v)
+            #NOTE:search for best kappa
+            p = 1
+            while True:
+                kappa = 0.5**p/np.asscalar(max(abs(u)))
+                U_test,V_test = expand(U,V,u,v,kappa)
+                if cost(E,P,U_test,V_test,lambda_) < F[-1]*(1-10**-4):
+                    log.info(f'MAIN - Choose kappa = {kappa}, p = {p}')
+                    log.info(f'MAIN - Number of columns = {U_test.shape[1]}')
+                    U,V = U_test, V_test
+                    break
+                elif kappa < 1e-8:
+                    log.info(f'MAIN - Achieve global optimum by kappa = {kappa}!')
+                    return U,V,mu,E
+                else:
+                    p += 1                    
             iter_ += 1
-    return U,V
+    return U,V,mu,E
 
 def validate(X):
     return all(np.isclose(X@np.ones(X.shape[1]), np.ones(X.shape[0])))
 
-def subroutine(X,U,V,drop_threshold = 0.01, max_iter = 40, tol = 0.001, lambda_ = 1e-06, eps = 1e-12, gamma1 = 1.1, gamma2 = 1.2 ):
-    iter_ = 0
+def cost(E,X,U,V,lambda_):
     d,s = U.shape
-    F =np.zeros(max_iter)
-    log.info(f'Starting error {linalg.norm(X - U@V.T)}')
+    return 1/2*linalg.norm(E@(X-U@V.T)) + lambda_*sum([linalg.norm(U[:,i]) * linalg.norm(V[:,i]) for i in range(s)])
+
+def subroutine(E,X,U,V,drop_threshold = 1e-8, max_iter = 40, lambda_ = 1e-06, eps = 1e-12, gamma1 = 1.1, gamma2 = 1.2 ):
+    d,s = U.shape
+    F = []
+    log.info(f'SUB - Starting error {cost(E,X,U,V,lambda_)}')
+    iter_ = 0
     #log.debug(f'min norm U {min(norm_by_axis(U))} and min norm V {min(norm_by_axis(V.T))}')
     while True:
         U,V,s = reduce(U,V,drop_threshold)
-        U,V = palm(X,U,V, lambda_, eps, gamma1, gamma2)
-        F[iter_] = linalg.norm(X - U@V.T)
-        log.info(f'Iter {iter_+1}: Error {F[iter_]}')
-        if iter_ > 3 and (F[iter_-3:iter_-1].mean()-F[iter_])/F[iter_] < tol:
-            log.info(f'Converged after {iter_} iterations')
+        U,V = palm(E,X,U,V,lambda_, eps, gamma1, gamma2)
+        F.append(cost(E,X,U,V,lambda_))
+        norm_U = norm_by_axis(U)
+        norm_V = norm_by_axis(V)
+        log.info(f'SUB - Iter {iter_+1}: Error {F[-1]}, Max Norm: {max(norm_U)}, Mean Norm: {np.mean(norm_U)}, Min Norm of U: {min(norm_U)}')
+        #log.info(f'Iter {iter_+1}: Error {F[iter_]}, Max Norm: {max(norm_V)}, Mean Norm: {np.mean(norm_V)}, Min Norm of U: {min(norm_V)}')
+        if iter_ > 10 and (np.array(F[-10:-1]).mean()-F[-1])/F[-1] < 0.0001:
+            log.info(f'SUB - Converged after {iter_} iterations')
             break
         elif iter_ >= max_iter -1:
-            log.info(f'Exit at max iter {max_iter}')
+            log.info(f'SUB - Exit at max iter {max_iter}')
             break
         else:
             iter_ += 1
     norm_array = norm_by_axis(V)/norm_by_axis(U)
-    mu = ((lambda_ * U * norm_array + 2 * (X - U@V.T)@V) * (U > 0)).sum(axis = 1)/(U>0).sum(axis = 1)
+    mu = ((lambda_ * U * norm_array + E@(X - U@V.T)@V) * (U > 0)).sum(axis = 1)/(U>0).sum(axis = 1)
     #mu = np.array([sum([(lambda_*U[i,j] * norm_array[j] + (2*(X-U@V.T)@V)[i,j]) 
     #                for j in range(s)]*(U[i,:]>0))/sum(U[i,:]>0) for i in range(d)])
     mu = np.reshape(mu, (-1,1))
     return U,V,mu,F
 
-def palm(P, U, V, lambda_ = 1e-06, eps = 1e-8, gamma1 = 1.1, gamma2 = 1.2 ):
+def palm(E, P, U, V, lambda_ = 1e-06, eps = 1e-14, gamma1 = 1.1, gamma2 = 1.2 ):
     m,n = U.shape
-    c = 1/(gamma1 * (linalg.norm(V.T@V) + lambda_/eps))
-    d = 1/(gamma2 * (linalg.norm(U.T@U) + lambda_*np.sqrt(m)*linalg.norm(U)))
-    log.debug(f'c: {c}, d:{d}')
+    c =1/(gamma1 * (linalg.norm(E**2)*linalg.norm(V.T@V) + lambda_/eps))
+    d = 1/(gamma2 * (linalg.norm(U.T@E**2@U) + lambda_*np.sqrt(m)*linalg.norm(U)))
+    #log.info(f'c: {c}, d:{d}')
     log.debug(f'min norm U {min(norm_by_axis(U))} and min norm V {min(norm_by_axis(V,axis = 1))}')
     #time0 = time.time()
-    F_U = -(P - U@V.T)@V + lambda_ * U @ np.diag([linalg.norm(V[:,j])/linalg.norm(U[:,j]) for j in range(n)])
+    F_U = -E**2@(P - U@V.T)@V + lambda_ * U @ np.diag([linalg.norm(V[:,j])/linalg.norm(U[:,j]) for j in range(n)])
     #time1 = time.time()
     U = projection(U - c * F_U, axis = 0)
     assert all(np.isclose(U@np.ones(n), np.ones(m)))
     #time2 = time.time()
-    F_V = -(P - U@V.T).T@U + lambda_ * V @ np.diag([linalg.norm(U[:,j])/linalg.norm(V[:,j]) for j in range(n)])
+    F_V = -(P - U@V.T).T@E**2@U + lambda_ * V @ np.diag([linalg.norm(U[:,j])/linalg.norm(V[:,j]) for j in range(n)])
     #time3 = time.time()
     V = projection(V - d * F_V, axis = 1)
     assert all(np.isclose(V.T@np.ones(m), np.ones(n)))
@@ -82,7 +104,7 @@ def palm(P, U, V, lambda_ = 1e-06, eps = 1e-8, gamma1 = 1.1, gamma2 = 1.2 ):
     #log.debug(f'Time: {(time1 - time0, time2-time1, time3-time2, time4-time3)}')
     return U,V
 
-def reduce(U,V, drop_threshold = 0.00001):
+def reduce(U,V, drop_threshold = 1e-8):
     norm = linalg.norm(U, ord = 2, axis = 0)
     drop = np.where(norm<drop_threshold)[0]
     if len(drop) > 0 :
@@ -104,22 +126,23 @@ def compress2(U, V, ind_threshold):
     pass
       
 #TODO: Check all np.ones
-def expand(U,V,u,v):
+def expand(U,V,u,v,kappa):
     d,s = U.shape
-    kappa = 0.5**4/max(abs(u))
+    #kappa = 0.5**15/np.asscalar(max(abs(u)))
     U = np.diag(np.reshape(np.ones((d,1)) - kappa * u,-1))@U
     U = np.concatenate((U, kappa * u), axis = 1)
     V = np.concatenate((V, 1/(v.T@np.ones((d,1)))*v), axis = 1)
-    log.info(f'Expanded: Number of columns = {U.shape[1]}')
+    #log.info(f'Expanded: Number of columns = {U.shape[1]}')
     return U,V
 
 def positive_normalize(x):
     x = x * (x>0)
     return normalize(x, axis = 0)
     
-def check_global_optimality(P,X,mu, threshold = 10e-4, max_iter = 100, lr = 10e-3,extra_eps = 10e-7, lambda_ = 10e-6):
+def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 1000, extra_eps = 10e-7, lambda_ = 1e-6):
+    logging.debug(f'(threshold , max_iter, lr, extra_eps, lambda_): {(threshold , max_iter, lr, extra_eps, lambda_)}')
     d,s = X.shape
-    t = mu@np.ones((1,d)) - 2*(X - P)
+    t = mu@np.ones((1,d)) - E@(X - P)
     u = normalize(np.random.rand(d,1), axis = 0)
     v = normalize(np.random.rand(d,1), axis = 0)
     #assert and(np.isclose(norm_by_axis(u),1)[0],np.isclose(norm_by_axis(v),1)[0])
@@ -131,7 +154,7 @@ def check_global_optimality(P,X,mu, threshold = 10e-4, max_iter = 100, lr = 10e-
         u = positive_normalize(u + lr * t@v)
         v = positive_normalize(v + lr * t.T@u)
         new_sigma = np.asscalar(u.T@t@v)
-        change = abs(new_sigma/old_sigma - 1)
+        change = abs(new_sigma-old_sigma)/abs(old_sigma)
         log.debug(f'Check global optimality: Iter = {iter_}, value = {new_sigma}, change = {change}')
         if change<threshold and iter_ > 3:
             log.info(f'Converged: Iter = {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')

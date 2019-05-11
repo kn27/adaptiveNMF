@@ -18,10 +18,10 @@ if __name__ == "__main__":
     transitions = []
     tax = pd.read_csv(r'yellow_tripdata_2016-01.csv',
                     usecols=['dropoff_longitude', 'dropoff_latitude', 'pickup_longitude', 'pickup_latitude'],
-                    chunksize = 10000, dtype =np.float32, nrows = 30000)
+                    chunksize = 100000, dtype =np.float32)
     i = 0
     man = get_zones()
-    joint = get_joint_grid(man, 70)
+    joint = get_joint_grid(man, 100)
     pool = mp.Pool(4)
     for tax_sample in tax:
         f = pool.apply_async(process, args = [tax_sample], kwds = {'zones':joint})
@@ -32,5 +32,5 @@ if __name__ == "__main__":
         #result.to_csv(r'test2.csv', index = False)
         i += 1
         print(f'Complete task {i}')
-    pd.concat(transitions).to_csv(r'50000.csv', index = False)
+    pd.concat(transitions).to_csv(r'100.csv', index = False)
     print(f'Time:{time.time() - time0}')
