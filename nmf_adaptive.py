@@ -6,23 +6,32 @@ from util import *
 import pdb
 import logging
 from scipy.linalg import svd 
+import hickle
     
-log = logging.Logger('Test')
-handler = logging.StreamHandler(sys.stdout)
-handler.setLevel(logging.INFO)
-formatter = logging.Formatter('[%(levelname)7s] - %(message)s')
-handler.setFormatter(formatter)
-log.addHandler(handler)
+log = logging.getLogger('runner.optimizer')
+# handler = logging.StreamHandler(sys.stdout)
+# handler.setLevel(logging.INFO)
+# formatter = logging.Formatter('[%(levelname)7s] - %(message)s')
+# handler.setFormatter(formatter)
+# log.addHandler(handler)
 
-def non_negative_factorization(P, s0, lr = 0.1, drop_threshold = 1e-8, max_iter = 10, inner_max_iter = 200,  lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2):
+# fh = logging.FileHandler(f'runner.log')
+# fh.setLevel(logging.INFO)
+# formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# fh.setFormatter(formatter)
+# log.addHandler(fh)
+
+def non_negative_factorization(P, s0, kappa_threshold = 1e-5, lr = 0.1, drop_threshold = 1e-8, max_iter = 10, inner_max_iter = 200,  lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2, capture:bool = True, outputpath:str = './'):
     d = P.shape[0]
     E = np.diag(np.sum(P, axis = 0))/d
     U,V = init(d,s0)
-    iter_ = 0
+    iter_ = 1 
     while True:
         #U,V = compress(U,V)
         U,V,mu,F = subroutine(E,P,U,V, eps = eps, drop_threshold = drop_threshold, max_iter = inner_max_iter, lambda_ = lambda_,  gamma1 = gamma1, gamma2 = gamma2)
         global_check, u, v = check_global_optimality(E, P, U@V.T, mu,lambda_ = lambda_, max_iter= 200, lr = lr)
+        if capture:
+            hickle.dump((U,V),f'{outputpath}Output_r={U.shape[1]:02d}')
         if global_check:
             log.info(f'MAIN - Achieve global optimum!')
             break
@@ -35,7 +44,7 @@ def non_negative_factorization(P, s0, lr = 0.1, drop_threshold = 1e-8, max_iter 
             while True:
                 kappa = 0.5**p/np.asscalar(max(abs(u)))
                 U_test,V_test = expand(U,V,u,v,kappa)
-                if cost(E,P,U_test,V_test,lambda_) < F[-1]*(1-10**-4):
+                if cost(E,P,U_test,V_test,lambda_) < F[-1]*(1-kappa_threshold):
                     log.info(f'MAIN - Choose kappa = {kappa}, p = {p}')
                     log.info(f'MAIN - Number of columns = {U_test.shape[1]}')
                     U,V = U_test, V_test
@@ -58,7 +67,7 @@ def cost(E,X,U,V,lambda_):
 def subroutine(E,X,U,V,drop_threshold = 1e-8, max_iter = 40, lambda_ = 1e-06, eps = 1e-12, gamma1 = 1.1, gamma2 = 1.2 ):
     d,s = U.shape
     F = []
-    log.info(f'SUB - Starting error {cost(E,X,U,V,lambda_)}')
+    log.info(f'OPTIMIZER - Starting error {cost(E,X,U,V,lambda_)}')
     iter_ = 0
     #log.debug(f'min norm U {min(norm_by_axis(U))} and min norm V {min(norm_by_axis(V.T))}')
     while True:
@@ -67,13 +76,13 @@ def subroutine(E,X,U,V,drop_threshold = 1e-8, max_iter = 40, lambda_ = 1e-06, ep
         F.append(cost(E,X,U,V,lambda_))
         norm_U = norm_by_axis(U)
         norm_V = norm_by_axis(V)
-        log.info(f'SUB - Iter {iter_+1}: Error {F[-1]}, Max Norm: {max(norm_U)}, Mean Norm: {np.mean(norm_U)}, Min Norm of U: {min(norm_U)}')
+        log.info(f'OPTIMIZER - Iter {iter_+1}: Error {F[-1]}, Max Norm: {max(norm_U)}, Mean Norm: {np.mean(norm_U)}, Min Norm of U: {min(norm_U)}')
         #log.info(f'Iter {iter_+1}: Error {F[iter_]}, Max Norm: {max(norm_V)}, Mean Norm: {np.mean(norm_V)}, Min Norm of U: {min(norm_V)}')
         if iter_ > 10 and (np.array(F[-10:-1]).mean()-F[-1])/F[-1] < 0.0001:
-            log.info(f'SUB - Converged after {iter_} iterations')
+            log.info(f'OPTIMIZER - Converged after {iter_} iterations')
             break
         elif iter_ >= max_iter -1:
-            log.info(f'SUB - Exit at max iter {max_iter}')
+            log.info(f'OPTIMIZER - Exit at max iter {max_iter}')
             break
         else:
             iter_ += 1
@@ -108,7 +117,7 @@ def reduce(U,V, drop_threshold = 1e-8):
     norm = linalg.norm(U, ord = 2, axis = 0)
     drop = np.where(norm<drop_threshold)[0]
     if len(drop) > 0 :
-        log.info(f'Drop columns {drop} where column norm is {norm[drop]}')
+        log.info(f'REDUCER - Drop columns {drop} where column norm is {norm[drop]}')
     #else:
     #    log.info(f'No reduction. Rank is still {U.shape[1]}')
     U = np.delete(U, drop, axis = 1)
@@ -119,7 +128,7 @@ def compress(U, V):
     d,s = U.shape
     combination = [[U[j,i] * V[k,i] for i in range(s)] for j in range(d) for k in range(d)]
     L,D,R = svd(combination)
-    log.info(f'Can drop {sum(np.isclose(0,D))} columns')
+    log.info(f'COMPRESSER - Can drop {sum(np.isclose(0,D))} columns')
     return U, V
     
 def compress2(U, V, ind_threshold):
@@ -140,7 +149,7 @@ def positive_normalize(x):
     return normalize(x, axis = 0)
     
 def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 1000, extra_eps = 10e-7, lambda_ = 1e-6):
-    logging.debug(f'(threshold , max_iter, lr, extra_eps, lambda_): {(threshold , max_iter, lr, extra_eps, lambda_)}')
+    logging.debug(f'BACKTRACKER - (threshold , max_iter, lr, extra_eps, lambda_): {(threshold , max_iter, lr, extra_eps, lambda_)}')
     d,s = X.shape
     t = mu@np.ones((1,d)) - E@(X - P)
     u = normalize(np.random.rand(d,1), axis = 0)
@@ -148,19 +157,19 @@ def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 10
     #assert and(np.isclose(norm_by_axis(u),1)[0],np.isclose(norm_by_axis(v),1)[0])
     iter_ = 0
     new_sigma = np.asscalar(u.T@t@v)
-    log.info(f'Initial sigma: {new_sigma}')
+    log.info(f'BACKTRACKER - Initial sigma: {new_sigma}')
     while True:
         old_sigma = new_sigma
         u = positive_normalize(u + lr * t@v)
         v = positive_normalize(v + lr * t.T@u)
         new_sigma = np.asscalar(u.T@t@v)
         change = abs(new_sigma-old_sigma)/abs(old_sigma)
-        log.debug(f'Check global optimality: Iter = {iter_}, value = {new_sigma}, change = {change}')
+        log.debug(f'BACKTRACKER - Check global optimality: Iter = {iter_}, value = {new_sigma}, change = {change}')
         if change<threshold and iter_ > 3:
-            log.info(f'Converged: Iter = {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
+            log.info(f'BACKTRACKER - Converged: Iter = {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
             break
         elif iter_>=max_iter:
-            log.info(f'Escaped: Iter_ {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
+            log.info(f'BACKTRACKER - Escaped: Iter_ {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
             break
         else:
             iter_ += 1
@@ -218,10 +227,10 @@ def projection2(X, axis = 0):
         return proj
         
 
-def init(d, s0):
+def init(d, s0, seed = 0):
+    np.random.seed(seed)
     U = np.random.rand(d,s0)
     V = np.random.rand(d,s0)
-    #log.debug(f'min norm U {min(norm_by_axis(U))} and min norm V {min(norm_by_axis(V,axis = 1))}')
     U = normalize(U, axis = 1, norm = 'l1')
     V = normalize(V, axis = 0, norm = 'l1')
     return U,V
