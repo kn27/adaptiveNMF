@@ -20,13 +20,15 @@ if __name__ == "__main__":
     parser.add_argument('eps', default = 1e-14, type = float)
     parser.add_argument('r', default = 5, type = int)
     parser.add_argument('kappa_threshold', default = 1e-4, type = float)
+    parser.add_argument('starting_kappa', default = 0.5, type = float)
+    parser.add_argument('starting_p', default = 1, type = int)
     parser.add_argument('outputpath',default = './', type = str)
     args = parser.parse_args()
 
     logger = logging.getLogger('runner')
     logger.setLevel(logging.INFO)
     fh = logging.FileHandler(f'{args.outputpath}runner.log')
-    fh.setLevel(logging.DEBUG)
+    fh.setLevel(logging.INFO)
     formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     fh.setFormatter(formatter)
     logger.addHandler(fh)
@@ -45,4 +47,4 @@ if __name__ == "__main__":
     
     logger.info(f'Run optimizer: lambda_={args.lambda_}, eps={args.eps},r={args.r}')
     d = P.shape[0]
-    U,V,mu,E = non_negative_factorization(P = P,s0 = 1,lr = 100, kappa_threshold = args.kappa_threshold, max_iter=args.r, lambda_=args.lambda_, eps = args.eps, gamma1 = 1.1, gamma2 = 1.2, capture = True, outputpath = args.outputpath)
+    U,V,mu,E = non_negative_factorization(P = P,s0 = 1,lr = 100, starting_kappa = args.starting_kappa, starting_p = args.starting_p, kappa_threshold = args.kappa_threshold, max_iter=args.r, lambda_=args.lambda_, eps = args.eps, gamma1 = 1.1, gamma2 = 1.2, capture = True, outputpath = args.outputpath)

@@ -8,6 +8,10 @@ from shapely.ops import cascaded_union
 import numpy as np
 import time
 import sys
+from sklearn.preprocessing import normalize
+from numpy import linalg
+import pandas as pd
+
 
 def aggregate_by_zone(trips, zones):
     #have to join individually because cannot find a way to find a field to join using geodataframe
@@ -58,3 +62,43 @@ def process(tax, zones):
     print(f'Time:{time.time()-time0}')
     sys.stdout.flush()
     return transition
+
+def group_and_map(aggregated, filename = None):
+    if filename:
+        aggregated = pd.read_csv(filename)
+        aggregated['count'] = 1
+    if 'count' not in aggregated.columns:
+        aggregated['count'] = 1
+    count = aggregated.groupby(['pu','do'])['count'].count()
+    count = pd.DataFrame(count)
+    count.columns = ['Count']
+    count.reset_index(inplace = True)
+    del aggregated
+    keep = count.groupby(['pu'])['Count'].sum()
+    keep = list(keep[keep/keep.sum() > 1e-4].index)
+    count = count[count.pu.apply(lambda x: x in keep) * count.do.apply(lambda x: x in keep)]
+    count.reset_index(inplace = True, drop = True)
+    unique = count.pu.unique()
+    statemap = dict(zip(unique, range(len(unique))))
+    return count, statemap
+
+def build_matrix(count, statemap):
+    A = np.zeros((len(statemap),len(statemap)))
+    for i in range(count.shape[0]):
+        try:
+            A[int(statemap[count.pu[i]]), int(statemap[count.do[i]])] = count.Count[i]
+        except Exception as e:
+            raise ValueError(e)
+    A = normalize(A, norm = 'l1',axis = 1)
+    assert all(np.isclose(linalg.norm(A, ord = 1,axis = 1), np.ones(A.shape[0])))
+    return A
+
+def inspect(A):
+    plt.hist(A.sum(axis = 0), bins = 15,range = (0,15))
+    plt.show()
+    plt.hist(A.sum(axis = 1), bins = 15,range = (0,15))
+    plt.show()
+
+def get_center(grid):
+    grid.geometry = grid.geometry.apply(lambda x: x.centroid)
+    return grid

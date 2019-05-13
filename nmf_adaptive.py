@@ -21,13 +21,34 @@ log = logging.getLogger('runner.optimizer')
 # fh.setFormatter(formatter)
 # log.addHandler(fh)
 
-def non_negative_factorization(P, s0, kappa_threshold = 1e-5, lr = 0.1, drop_threshold = 1e-8, max_iter = 10, inner_max_iter = 200,  lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2, capture:bool = True, outputpath:str = './'):
+def overall_check(E, P, U, V, lambda_):
+    return {'overall': linalg.norm(P - U@V.T), 'F': {1/2*linalg.norm(E@(P-U@V.T))**2}, 'regularize':lambda_*sum([linalg.norm(U[:,i]) * linalg.norm(V[:,i]) for i in range(U.shape[1])])}
+
+def cost(E,X,U,V,lambda_):
+    d,s = U.shape
+    return 1/2*linalg.norm(E@(X-U@V.T))**2 + lambda_*sum([linalg.norm(U[:,i]) * linalg.norm(V[:,i]) for i in range(s)])
+
+
+def non_negative_factorization(P, s0,starting_p = 1, starting_kappa = 0.5 , kappa_threshold = 1e-5, lr = 0.1, drop_threshold = 1e-8, max_iter = 10, inner_max_iter = 200,  lambda_ = 1e-06, eps = 1e-4, gamma1 = 1.1, gamma2 = 1.2, capture:bool = True, outputpath:str = './', local = False):
+    #pdb.set_trace()
     d = P.shape[0]
-    E = np.diag(np.sum(P, axis = 0))/d
+    #E = np.diag(np.sum(P, axis = 0))/d
+    E = np.diag(np.ones(d))/d
     U,V = init(d,s0)
     iter_ = 1 
+    if local:
+        global log
+        #del log
+        log = logging.getLogger('test')
+        log.setLevel(logging.INFO)
+        #handler = logging.StreamHandler(sys.stdout)
+        #handler.setLevel(logging.INFO)
+        #formatter = logging.Formatter('[%(levelname)7s] - %(message)s')
+        #handler.setFormatter(formatter)
+        #log.addHandler(handler) 
     while True:
         #U,V = compress(U,V)
+        log.info(f'MAIN - Start subroutine')
         U,V,mu,F = subroutine(E,P,U,V, eps = eps, drop_threshold = drop_threshold, max_iter = inner_max_iter, lambda_ = lambda_,  gamma1 = gamma1, gamma2 = gamma2)
         global_check, u, v = check_global_optimality(E, P, U@V.T, mu,lambda_ = lambda_, max_iter= 200, lr = lr)
         if capture:
@@ -40,17 +61,25 @@ def non_negative_factorization(P, s0, kappa_threshold = 1e-5, lr = 0.1, drop_thr
             break
         else:
             #NOTE:search for best kappa
-            p = 1
+            p = starting_p
             while True:
-                kappa = 0.5**p/np.asscalar(max(abs(u)))
+                #kappa = 0.5**p/np.asscalar(max(abs(u)))
+                #pdb.set_trace()
+                kappa = starting_kappa**p/u
+                from numpy import inf
+                kappa[kappa == inf] = 0
+                kappa[kappa == -inf] = 0
+                kappa = np.diag(kappa.flatten())
                 U_test,V_test = expand(U,V,u,v,kappa)
-                if cost(E,P,U_test,V_test,lambda_) < F[-1]*(1-kappa_threshold):
-                    log.info(f'MAIN - Choose kappa = {kappa}, p = {p}')
+                newcost = cost(E,P,U_test,V_test,lambda_)
+                #log.debug(f'MAIN - Test p = {p}, kappa = {kappa}, cost = {newcost}') 
+                if newcost < F[-1]*(1-kappa_threshold):
+                    log.info(f'MAIN - Choose kappa = {kappa}, p = {p}, cost = {newcost}, sum_by_column = {np.sum(U_test, axis = 0)}')
                     log.info(f'MAIN - Number of columns = {U_test.shape[1]}')
                     U,V = U_test, V_test
                     break
-                elif kappa < 1e-8:
-                    log.info(f'MAIN - Achieve global optimum by kappa = {kappa}!')
+                elif (np.max(kappa.flatten()) < 1e-8).all():
+                    log.info(f'MAIN - Achieve global optimum by kappa!')# = {kappa}!')
                     return U,V,mu,E
                 else:
                     p += 1                    
@@ -58,25 +87,21 @@ def non_negative_factorization(P, s0, kappa_threshold = 1e-5, lr = 0.1, drop_thr
     return U,V,mu,E
 
 def validate(X):
-    return all(np.isclose(X@np.ones(X.shape[1]), np.ones(X.shape[0])))
-
-def cost(E,X,U,V,lambda_):
-    d,s = U.shape
-    return 1/2*linalg.norm(E@(X-U@V.T)) + lambda_*sum([linalg.norm(U[:,i]) * linalg.norm(V[:,i]) for i in range(s)])
+    return all(np.isclose(X@np.ones(X.shape[1]),np.ones(X.shape[0]))) & all(X.flatten() >= 0)
 
 def subroutine(E,X,U,V,drop_threshold = 1e-8, max_iter = 40, lambda_ = 1e-06, eps = 1e-12, gamma1 = 1.1, gamma2 = 1.2 ):
     d,s = U.shape
     F = []
-    log.info(f'OPTIMIZER - Starting error {cost(E,X,U,V,lambda_)}')
+    #log.info(f'OPTIMIZER - Starting error {cost(E,X,U,V,lambda_)}')
     iter_ = 0
     #log.debug(f'min norm U {min(norm_by_axis(U))} and min norm V {min(norm_by_axis(V.T))}')
     while True:
         U,V,s = reduce(U,V,drop_threshold)
         U,V = palm(E,X,U,V,lambda_, eps, gamma1, gamma2)
         F.append(cost(E,X,U,V,lambda_))
-        norm_U = norm_by_axis(U)
-        norm_V = norm_by_axis(V)
-        log.info(f'OPTIMIZER - Iter {iter_+1}: Error {F[-1]}, Max Norm: {max(norm_U)}, Mean Norm: {np.mean(norm_U)}, Min Norm of U: {min(norm_U)}')
+        #norm_U = norm_by_axis(U)
+        #norm_V = norm_by_axis(V)
+        log.info(f'OPTIMIZER - Iter {iter_+1}: Error {F[-1]}')#', {overall_check(E,X, U, V, lambda_)}')#, Max Norm: {max(norm_U)}, Mean Norm: {np.mean(norm_U)}, Min Norm of U: {min(norm_U)}')
         #log.info(f'Iter {iter_+1}: Error {F[iter_]}, Max Norm: {max(norm_V)}, Mean Norm: {np.mean(norm_V)}, Min Norm of U: {min(norm_V)}')
         if iter_ > 10 and (np.array(F[-10:-1]).mean()-F[-1])/F[-1] < 0.0001:
             log.info(f'OPTIMIZER - Converged after {iter_} iterations')
@@ -135,7 +160,7 @@ def compress2(U, V, ind_threshold):
     pass
       
 #TODO: Check all np.ones
-def expand(U,V,u,v,kappa):
+def expand2(U,V,u,v,kappa):
     d,s = U.shape
     #kappa = 0.5**15/np.asscalar(max(abs(u)))
     U = np.diag(np.reshape(np.ones((d,1)) - kappa * u,-1))@U
@@ -144,10 +169,27 @@ def expand(U,V,u,v,kappa):
     #log.info(f'Expanded: Number of columns = {U.shape[1]}')
     return U,V
 
+def expand(U,V,u,v,kappa):
+    #pdb.set_trace()
+    d,s = U.shape
+    #kappa = 0.5**15/np.asscalar(max(abs(u)))
+    U = np.diag(np.ones(d) - (kappa@u).flatten())@U
+    try: 
+        U = np.concatenate((U, kappa @ u), axis = 1)
+    except:
+        pdb.set_trace()
+    #print(U.shape)
+    assert validate(U)
+    V = np.concatenate((V, 1/(v.T@np.ones((d,1)))*v), axis = 1)
+    #log.info(f'Expanded: Number of columns = {U.shape[1]}')
+    return U,V
+
 def positive_normalize(x):
-    x = x * (x>0)
-    return normalize(x, axis = 0)
-    
+    return normalize((positify(x)), axis = 0)
+
+def positify(x):
+    return x * (x>0)
+
 def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 1000, extra_eps = 10e-7, lambda_ = 1e-6):
     logging.debug(f'BACKTRACKER - (threshold , max_iter, lr, extra_eps, lambda_): {(threshold , max_iter, lr, extra_eps, lambda_)}')
     d,s = X.shape
@@ -164,9 +206,10 @@ def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 10
         v = positive_normalize(v + lr * t.T@u)
         new_sigma = np.asscalar(u.T@t@v)
         change = abs(new_sigma-old_sigma)/abs(old_sigma)
-        log.debug(f'BACKTRACKER - Check global optimality: Iter = {iter_}, value = {new_sigma}, change = {change}')
+        #log.info(f'BACKTRACKER - Check global optimality: Iter = {iter_}, value = {new_sigma}, change = {change}')
         if change<threshold and iter_ > 3:
             log.info(f'BACKTRACKER - Converged: Iter = {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
+            log.info(f'BACKTRACKER - Quantile of u {np.quantile(u, q = [0.9,0.75,0.5,0.25,0.1])}')
             break
         elif iter_>=max_iter:
             log.info(f'BACKTRACKER - Escaped: Iter_ {iter_}, Sigma = {new_sigma}, Smaller than lambda: {new_sigma < lambda_}')
@@ -174,6 +217,23 @@ def check_global_optimality(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 10
         else:
             iter_ += 1
     return new_sigma < (1+extra_eps) * lambda_, u, v
+
+def check_global_optimality2(E,P,X,mu, threshold = 10e-6, max_iter = 100, lr = 1000, extra_eps = 10e-7, lambda_ = 1e-6):
+    logging.debug(f'BACKTRACKER - (threshold , max_iter, lr, extra_eps, lambda_): {(threshold , max_iter, lr, extra_eps, lambda_)}')
+    d,s = X.shape
+    t = mu@np.ones((1,d)) - E@(X - P)
+    pdb.set_trace()
+    v_sample = [normalize(np.random.rand(d,1), axis = 0) for _ in range(10000)]
+    check = np.array([linalg.norm(positify(t@v)) for v in v_sample])
+    if any(check > lambda_):
+        temp = np.argmax(check)
+        v = v_sample[temp]
+        u = positive_normalize(t@v)
+        log.info(f'BACKTRACKER - Sigma = {np.asscalar(u.T@t@v)}, Smaller than lambda: {np.asscalar(u.T@t@v) < lambda_}')
+        log.info(f'BACKTRACKER - Quantile of u {np.quantile(u, q = [0.9,0.75,0.5,0.25,0.1])}')
+        return False, u,v
+    else:
+        return True, None, None
 
 def norm_by_axis(X,axis = 0):
     return linalg.norm(X, ord = 2, axis = axis)
