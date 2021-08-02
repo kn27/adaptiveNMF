@@ -32,7 +32,7 @@ def plot(trips, zones):
     trips.plot(ax = ax, color = 'red')
 
 def get_zones():
-    zones = gpd.read_file(r'taxi_zones\taxi_zones.shp')
+    zones = gpd.read_file('./taxi_zones/taxi_zones.shp')
     zones = zones.to_crs("+proj=longlat +ellps=WGS84 +datum=WGS84 +no_defs")
     temp = zones[zones.borough == 'Manhattan'].reset_index(inplace = False, drop = True)
     temp = gpd.GeoDataFrame(geometry = [cascaded_union(temp.geometry)])

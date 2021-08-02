@@ -1,4 +1,5 @@
-
+data/
+runs/
 .ipynb_checkpoints/Map Investigation-checkpoint.ipynb
 .ipynb_checkpoints/NMF-checkpoint.ipynb
 .ipynb_checkpoints/PostProcessing-checkpoint.ipynb
